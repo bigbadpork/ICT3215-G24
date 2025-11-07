@@ -8,7 +8,7 @@
 
 #define BUFFER_SIZE 1024
 #define PORT 8080
-#define FRAGMENT_SIZE 512  // Size of each fragment
+#define FRAGMENT_SIZE 10  // Size of each fragment
 
 // Define your payload here
 const char *PAYLOAD = "This is a test payload that will be sent in fragments from Device B to Device A. "
