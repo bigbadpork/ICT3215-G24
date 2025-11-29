@@ -5,6 +5,7 @@
 #include <string.h>
 #include <ws2tcpip.h>
 #include "antidebug.h"
+#include "checksandbox.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
