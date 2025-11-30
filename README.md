@@ -2,40 +2,55 @@
 Digital Forensics Project Assignment
 
 Project Overview
-This repository contains the code and resources for the Digital Forensics Project. The project focuses on a security scenario involving attacker and victim systems, demonstrating various forensic techniques and security concepts.
+This repository contains the code and resources for ICT3215 Digital Forensics Project. This README file details the different executables, as well as how to recompile them if need be.
 
-Converting Files in Windows Environment:
-    1. Navigate to the project directory containing Victim code (Note: Attacker will always be run in linux):
-       cd path\to\project\folder
+<h2>Running the C2 server</h2>
 
-    3. Compile the C source files using GCC with Winsock library:
-       gcc -o filename.exe filename.c -lws2_32
+1. Compile the payload `message.c` on a Debian-based server (e.g Kali Linux, Ubuntu)
+   
+   ```gcc -o message.exe message.c```
 
-    3. Run the compiled executable:
-       .\filename.exe
+2. Compile `C2_server.c` on a Debian-based server (e.g Kali Linux, Ubuntu)
+   
+   ```gcc -o C2_server.exe C2_server.c```
 
-Converting Files in Linux Environment:
-    1. Transfer the source files to your Linux system
+3. Run the compiled server
+   
+   ```./C2_server.c```
 
-    2. Navigate to the directory containing the source files:
-       cd /destination/path
+<h2>Setting up for the victim server</h2>
 
-    3. Compile the C source files using GCC:
-       gcc filename.c -o filename
+#### This scenario assumes that the file is running under normal operations 
 
-Running the Attack:
-    Step 1: Prepare Attacker Machine (Linux):
-        Make sure that C2_server.c and message.c have been compiled on your Linux device:
-            gcc C2_server.c -o C2_server
-            gcc message.c -o message
+1. If your victim server is on a Virtual Machine (VM), it is recommended to turn off Windows Firewall (NOT Windows Defender).
+2. Ensure that the victim and C2 server are in the same subnet.
+3. Compile `notepad_hollowed.c` on any Windows machine, and drop the .exe inside the victim
+   
+   ```gcc -o notepad1.exe notepad_hollowed.c -lws2_32``` 
+4. Run the program. 
+5. It will establish a connection to the C2 server, spawn `message.exe`, pop up the textbox and terminate itself after 3 seconds.
+6. `notepad_silent.c` achieves the same result, minus the command line popup which was included for demonstration purposes
 
-        Run the Command & Control server:
-            ./C2_server
+<h2>Antidebug Files</h2>
 
-    Step 2: Deploy Payload on Victim Machine (Windows)
-        Ensure either notepad_silent.exe (without CLI messages) or notepad_embeded.exe (with CLI messages) is on your Windows device
+1. The antidebug test case functions can be found in the `Antidebug` folder
+2. If you wish to make your own test cases, modify `antidebug.c` and recompile with the following command
+   
+   ```gcc -o antidebug.exe antidebug.c -ladvapi32```
+3. Run the test case accordingly
+   
+   ```antidebug.exe <test case number>```
 
-        Run the payload on the victim machine:
-            .\notepad_silent.exe
-            or
-            .\notepad_embeded.exe
+<h2>Process Hollowing Files</h2>
+
+1. The process hollowing test files can be found in the `Process Hollowing` folder
+2. To individually test this component, first compile `payload.c`, which is an alert box.
+   
+   ```gcc -o payload.exe payload.c```
+
+3. Then, compile `process_hollowing.c`
+   
+   ```gcc -o process_hollowing.exe process_hollowing.c -luser32```
+4. Run the test case
+   
+   ```process_hollowing.exe```
