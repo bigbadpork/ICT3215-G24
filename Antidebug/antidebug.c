@@ -1,25 +1,21 @@
-#include "antidebug.h"
+#include <windows.h>
+#include <stdio.h>
+#include <string.h>
 
-// Global variables (actual definitions)
+#define MAX_API_CALLS 50
+#define THRESHOLD_SECONDS 3.0
+
+typedef struct {
+    char apiName[64];
+    DWORD lastCallTick;
+    int callCount;
+} ApiCallRecord;
+
 ApiCallRecord g_apiTracker[MAX_API_CALLS];
 int g_trackerCount = 0;
 
-void InitAntiDebug() {
-    g_trackerCount = 0;
-    memset(g_apiTracker, 0, sizeof(g_apiTracker));
-    printf("[ANTIDEBUG] API monitoring initialized (threshold: %.1f seconds)\n", 
-           THRESHOLD_SECONDS);
-}
-
-void PrintAntiDebugStats() {
-    printf("\n[ANTIDEBUG] Monitoring Statistics:\n");
-    printf("Total APIs tracked: %d\n", g_trackerCount);
-    for (int i = 0; i < g_trackerCount; i++) {
-        printf("  - %s: %d calls\n", 
-               g_apiTracker[i].apiName, 
-               g_apiTracker[i].callCount);
-    }
-}
+// Forward declarations
+void TriggerCountermeasures(const char* apiName);
 
 BOOL MonitorApiCall(const char* apiName) {
     DWORD currentTick = GetTickCount();
@@ -66,7 +62,7 @@ void TriggerCountermeasures(const char* apiName) {
     exit(-1);
 }
 
-// All the Safe* wrapper functions from before...
+// Real API wrappers
 void SafeGetSystemTime() {
     if (!MonitorApiCall("GetSystemTime")) return;
     SYSTEMTIME st;
@@ -191,32 +187,67 @@ void TestFileOperations() {
     printf("[TEST] File operations completed\n");
 }
 
-// Triggers countermeasures due to same API call in less than allowed threshold timing
-void TestAPIs() {
-    printf("\n========== All APIs Demo ==========\n");
-    SafeGetSystemTime();
-    SafeGetModuleHandle();
-    SafeIsDebuggerPresent();
-    SafeGetTickCount();
-    SafeGetCurrentProcessId();
-    SafeGetComputerName();
-    SafeRegQueryValue();
-    SafeGetVersionEx();
-    Sleep(500);
-    SafeGetVersionEx();
-    printf("[TEST] All APIs called successfully\n");
-}
-
-// Wont trigger countermeasures due to no sleep
-void TestAPIsNoSleep() {
-    printf("\n========== All APIs Demo ==========\n");
-    SafeGetSystemTime();
-    SafeGetModuleHandle();
-    SafeIsDebuggerPresent();
-    SafeGetTickCount();
-    SafeGetCurrentProcessId();
-    SafeGetComputerName();
-    SafeRegQueryValue();
-    SafeGetVersionEx();
-    printf("[TEST] All APIs called successfully\n");
+int main(int argc, char* argv[]) {
+    printf("===========================================\n");
+    printf("Anti-Debugging Demonstration - Enhanced\n");
+    printf("API Call Frequency Monitoring POC\n");
+    printf("===========================================\n");
+    
+    if (argc < 2) {
+        printf("\nUsage: %s <test_number>\n", argv[0]);
+        printf("Tests:\n");
+        printf("  1 - Normal behavior (should pass)\n");
+        printf("  2 - Rapid API calls (should trigger countermeasures)\n");
+        printf("  3 - Multiple different APIs (should pass)\n");
+        printf("  4 - File operations test\n");
+        printf("  5 - All APIs demo\n");
+        return 0;
+    }
+    
+    int testNum = atoi(argv[1]);
+    
+    switch(testNum) {
+        case 1:
+            TestNormalBehavior();
+            break;
+        case 2:
+            TestRapidAPICalls();
+            break;
+        case 3:
+            TestMultipleAPIs();
+            break;
+        case 4:
+            TestFileOperations();
+            break;
+        case 5:
+            printf("\n========== All APIs Demo ==========\n");
+            SafeGetSystemTime();
+            SafeGetModuleHandle();
+            SafeIsDebuggerPresent();
+            SafeGetTickCount();
+            SafeGetCurrentProcessId();
+            SafeGetComputerName();
+            SafeRegQueryValue();
+            SafeGetVersionEx();
+            printf("[TEST] All APIs called successfully\n");
+            break;
+        case 6:
+            printf("\n========== All APIs Demo ==========\n");
+            SafeGetSystemTime();
+            SafeGetModuleHandle();
+            SafeIsDebuggerPresent();
+            SafeGetTickCount();
+            SafeGetCurrentProcessId();
+            SafeGetComputerName();
+            SafeRegQueryValue();
+            SafeGetVersionEx();
+            Sleep(500);
+            SafeGetVersionEx();
+            printf("[TEST] All APIs called successfully\n");
+            break;
+        default:
+            printf("Invalid test number\n");
+    }
+    
+    return 0;
 }

