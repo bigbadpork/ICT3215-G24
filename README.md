@@ -75,3 +75,12 @@ This repository contains the code and resources for ICT3215 Digital Forensics Pr
    ```
    process_hollowing.exe
    ```
+#### Additional Information (!Important!)
+
+To bypass detection and intervention of environment checks, remove the comment such that:
+    // For testing, force no sandbox detected, comment if detection wanted
+    //sandbox_result = 0; 
+
+Becomes:
+    // For testing, force no sandbox detected, comment if detection wanted
+    sandbox_result = 0; 
