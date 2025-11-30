@@ -190,3 +190,33 @@ void TestFileOperations() {
     SafeCreateFile();
     printf("[TEST] File operations completed\n");
 }
+
+// Triggers countermeasures due to same API call in less than allowed threshold timing
+void TestAPIs() {
+    printf("\n========== All APIs Demo ==========\n");
+    SafeGetSystemTime();
+    SafeGetModuleHandle();
+    SafeIsDebuggerPresent();
+    SafeGetTickCount();
+    SafeGetCurrentProcessId();
+    SafeGetComputerName();
+    SafeRegQueryValue();
+    SafeGetVersionEx();
+    Sleep(500);
+    SafeGetVersionEx();
+    printf("[TEST] All APIs called successfully\n");
+}
+
+// Wont trigger countermeasures due to no sleep
+void TestAPIsNoSleep() {
+    printf("\n========== All APIs Demo ==========\n");
+    SafeGetSystemTime();
+    SafeGetModuleHandle();
+    SafeIsDebuggerPresent();
+    SafeGetTickCount();
+    SafeGetCurrentProcessId();
+    SafeGetComputerName();
+    SafeRegQueryValue();
+    SafeGetVersionEx();
+    printf("[TEST] All APIs called successfully\n");
+}

@@ -35,4 +35,11 @@ void SafeCreateFile();
 void SafeRegQueryValue();
 void SafeGetVersionEx();
 
+void TestNormalBehavior();
+void TestRapidAPICalls();
+void TestMultipleAPIs();
+void TestFileOperations();
+void TestAPIs();
+void TestAPIsNoSleep();
+
 #endif // ANTIDEBUG_H
