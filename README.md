@@ -2,9 +2,11 @@
 Digital Forensics Project Assignment
 
 Project Overview
+
 This repository contains the code and resources for the Digital Forensics Project. The project focuses on a security scenario involving attacker and victim systems, demonstrating various forensic techniques and security concepts.
 
 Converting Files in Windows Environment:
+
     1. Navigate to the project directory containing Victim code (Note: Attacker will always be run in linux):
        cd path\to\project\folder
 
@@ -15,6 +17,7 @@ Converting Files in Windows Environment:
        .\filename.exe
 
 Converting Files in Linux Environment:
+
     1. Transfer the source files to your Linux system
 
     2. Navigate to the directory containing the source files:
@@ -24,6 +27,7 @@ Converting Files in Linux Environment:
        gcc filename.c -o filename
 
 Running the Attack:
+
     Step 1: Prepare Attacker Machine (Linux):
         Make sure that C2_server.c and message.c have been compiled on your Linux device:
             gcc C2_server.c -o C2_server
